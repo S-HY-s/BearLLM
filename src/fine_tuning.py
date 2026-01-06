@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, TrainingArguments, Trainer
 import numpy as np
 from models.FCN import FeatureEncoder
+from models.reference_retriever import ReferenceRetriever
 from functions.mbhm import CorpusDataset
 
 env = dotenv_values()
@@ -151,8 +152,10 @@ class IdConverter:
         self.hp = HyperParameters()
         self.test_file = './cache.npy'
         self.dataset = None
+        self.retriever = None
         if train_mode:
             self.dataset = CorpusDataset()
+            self.retriever = get_reference_retriever(self.hp.device)
 
     @torch.no_grad()
     def get_signal(self, signal_ids_tensor, train_mode=True):
@@ -161,8 +164,19 @@ class IdConverter:
         if train_mode:
             sample_ids = decode_sample_id(signal_ids_tensor)
             for sample_id in sample_ids:
-                sample_id, label_id, vib, instruction, response = self.dataset.__getitem__(sample_id)
-                res.append(vib)
+                signal_item = self.dataset.get_signal_item(int(sample_id))
+                query = np.array(signal_item['vib_data'])
+                ref_index_pool = signal_item['ref_index_pool']
+                if ref_index_pool:
+                    ref_pool_vib = np.array(self.dataset.vib_data[ref_index_pool])
+                    ref_tensor = self.retriever.retrieve(
+                        torch.from_numpy(query).to(self.hp.device),
+                        torch.from_numpy(ref_pool_vib).to(self.hp.device),
+                    )
+                    ref = ref_tensor.detach().cpu().numpy()
+                else:
+                    ref = query
+                res.append(np.array([query, ref]))
         else:
             res.append(np.load(self.test_file))
             os.remove(self.test_file)
@@ -236,6 +250,15 @@ def get_bearllm(train_mode=True):
     return model
 
 
+def get_reference_retriever(device=None):
+    feature_encoder = FeatureEncoder()
+    feature_encoder.load_weights(fcn_weights)
+    feature_encoder.eval()
+    if device is not None:
+        feature_encoder.to(device)
+    return ReferenceRetriever(feature_encoder)
+
+
 def mod_xt_for_qwen(xt):
     text_part1 = '<|im_start|>system\n' + sys_prompt + '\n<|im_end|><|im_start|>user\n' + xt.split('#state_place_holder#')[0]
     text_part2 = xt.split('#state_place_holder#')[1] + '<|im_end|>\n<|im_start|>assistant\n'
@@ -276,7 +299,10 @@ class FineTuningDataset(Dataset):
         return self.dataset.__len__()
 
     def __getitem__(self, idx):
-        sample_id, label_id, vib, instruction, response = self.dataset.__getitem__(idx)
+        text_item = self.dataset.get_text_item(idx)
+        sample_id = text_item['sample_id']
+        instruction = text_item['instruction']
+        response = text_item['response']
         signal_ids = signal_token_id + encode_sample_id(sample_id)
         user_part1, user_part2 = mod_xt_for_qwen(instruction)
         user_part1_ids = self.tokenizer(user_part1, return_tensors='pt', add_special_tokens=False).input_ids[0]

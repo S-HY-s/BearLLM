@@ -2,7 +2,7 @@ import torch
 from dotenv import dotenv_values
 from peft import PeftModel
 from transformers import AutoTokenizer
-from src.fine_tuning import description_len, signal_token_id, get_bearllm, mod_xt_for_qwen
+from src.fine_tuning import description_len, signal_token_id, get_bearllm, get_reference_retriever, mod_xt_for_qwen
 import numpy as np
 from functions.dcn import dcn
 import json
@@ -18,7 +18,16 @@ demo_data = json.load(open(f'{mbhm_dataset}/demo_data.json'))
 
 def create_cache():
     query_data = np.array(demo_data['vib_data'])
-    ref_data = np.array(demo_data['ref_data'])
+    if 'ref_pool' in demo_data:
+        retriever = get_reference_retriever(device)
+        ref_pool = np.array(demo_data['ref_pool'])
+        ref_tensor = retriever.retrieve(
+            torch.from_numpy(query_data).to(device),
+            torch.from_numpy(ref_pool).to(device),
+        )
+        ref_data = ref_tensor.detach().cpu().numpy()
+    else:
+        ref_data = np.array(demo_data['ref_data'])
     query_data = dcn(query_data)
     ref_data = dcn(ref_data)
     rv = np.array([query_data, ref_data])
