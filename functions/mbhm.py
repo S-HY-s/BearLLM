@@ -27,6 +27,15 @@ def get_ref_ids():
         ref_ids[condition_id].append(file_id)
     return ref_ids
 
+
+def get_condition_map():
+    conn = sqlite3.connect(meta_path)
+    cursor = conn.cursor()
+    cursor.execute('SELECT file_id, condition_id FROM file_info')
+    rows = cursor.fetchall()
+    conn.close()
+    return {file_id: condition_id for file_id, condition_id in rows}
+
 def create_cache_dataset():
     ref_ids = get_ref_ids()
     conn = sqlite3.connect(meta_path)
@@ -102,22 +111,41 @@ class CorpusDataset:
     def __init__(self):
         self.vib_data = h5py.File(data_path, 'r')['vibration']
         self.corpus = json.load(open(corpus_path, 'r'))
+        self.condition_map = get_condition_map()
+        self.healthy_indices_by_condition = get_ref_ids()
 
     def __len__(self):
         return len(self.corpus)
 
-    def __getitem__(self, idx):
+    def get_signal_item(self, idx):
         corpus_data = self.corpus[idx]
         sample_id = corpus_data['id']
         instruction = corpus_data['instruction']
-        response = corpus_data['response']
-        ref_id = corpus_data['ref_id']
         vib_id = corpus_data['vib_id']
-        ref_data = self.vib_data[ref_id]
         vib_data = self.vib_data[vib_id]
-        vib = np.array([vib_data, ref_data])
+        condition_id = self.condition_map.get(vib_id)
+        ref_index_pool = self.healthy_indices_by_condition.get(condition_id, [])
         label_id = corpus_data['label_id']
-        return sample_id, label_id, vib,  instruction, response
+        return {
+            'instruction': instruction,
+            'vib_data': vib_data,
+            'ref_index_pool': ref_index_pool,
+            'condition': condition_id,
+            'label': label_id,
+            'sample_id': sample_id,
+        }
+
+    def get_text_item(self, idx):
+        corpus_data = self.corpus[idx]
+        return {
+            'sample_id': corpus_data['id'],
+            'instruction': corpus_data['instruction'],
+            'response': corpus_data['response'],
+            'label': corpus_data['label_id'],
+        }
+
+    def __getitem__(self, idx):
+        return self.get_signal_item(idx)
 
 
 if __name__ == '__main__':
